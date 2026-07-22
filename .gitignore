@@ -1,0 +1,11 @@
+# Never commit real quote data or dev/test artifacts to this public repo.
+*.xls
+*.xlsx
+_tmptest.*
+_local_validation/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+Thumbs.db

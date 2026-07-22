@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GTI Quote Cleaner</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --card: #ffffff;
+    --ink: #1b2733;
+    --muted: #5b6b7a;
+    --line: #d9e0e7;
+    --brand: #1f6feb;
+    --brand-dark: #1858c4;
+    --ok: #1a7f4b;
+    --warn: #9a6a00;
+    --warn-bg: #fff6e0;
+    --err: #b42318;
+    --err-bg: #fdecea;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Arial, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.5;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 32px 20px 64px; }
+  header h1 { font-size: 24px; margin: 0 0 4px; }
+  header p { margin: 0; color: var(--muted); }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 22px;
+    margin-top: 20px;
+  }
+  #drop {
+    border: 2px dashed var(--line);
+    border-radius: 10px;
+    padding: 34px 20px;
+    text-align: center;
+    color: var(--muted);
+    transition: border-color .15s, background .15s;
+    cursor: pointer;
+  }
+  #drop.hot { border-color: var(--brand); background: #eef4ff; color: var(--ink); }
+  #drop.disabled { opacity: .55; pointer-events: none; }
+  #drop strong { color: var(--ink); }
+  #fileName { margin-top: 12px; font-weight: bold; color: var(--ink); }
+  .row { display: flex; gap: 12px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+  button {
+    font: inherit;
+    font-weight: 600;
+    border: 0;
+    border-radius: 8px;
+    padding: 11px 20px;
+    cursor: pointer;
+  }
+  button.primary { background: var(--brand); color: #fff; }
+  button.primary:hover:not(:disabled) { background: var(--brand-dark); }
+  button:disabled { background: #c7d0d9; color: #eef2f5; cursor: not-allowed; }
+  a.download {
+    display: inline-block;
+    background: var(--ok);
+    color: #fff;
+    text-decoration: none;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 11px 20px;
+  }
+  .status { margin-top: 14px; color: var(--muted); min-height: 22px; }
+  .status.busy::before {
+    content: "";
+    display: inline-block;
+    width: 13px; height: 13px;
+    margin-right: 8px;
+    border: 2px solid var(--line);
+    border-top-color: var(--brand);
+    border-radius: 50%;
+    vertical-align: -2px;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .msg { margin-top: 16px; padding: 14px 16px; border-radius: 8px; display: none; }
+  .msg.show { display: block; }
+  .msg.error { background: var(--err-bg); color: var(--err); border: 1px solid #f3b5ae; }
+  .summary { margin-top: 20px; display: none; }
+  .summary.show { display: block; }
+  .summary h2 { font-size: 17px; margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat {
+    background: #f7f9fb;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .stat .n { font-size: 22px; font-weight: 700; }
+  .stat .l { font-size: 13px; color: var(--muted); }
+  .flags { margin-top: 16px; }
+  .flag {
+    background: var(--warn-bg);
+    border: 1px solid #f0d79a;
+    color: var(--warn);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-top: 8px;
+    font-size: 14px;
+  }
+  .flag ul { margin: 6px 0 0; padding-left: 20px; }
+  .allclear { color: var(--ok); font-size: 14px; margin-top: 12px; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 13px; text-align: center; }
+  code { background: #eef2f5; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>GTI Quote Cleaner</h1>
+    <p>Turn a raw GTI "Quotes List" export into a clean, sortable spreadsheet.</p>
+  </header>
+
+  <div class="card">
+    <p style="margin-top:0">Drop your <code>.xls</code> export below, then click <strong>Clean file</strong>. Your file never leaves this browser tab.</p>
+
+    <div id="drop" class="disabled">
+      <div><strong>Drop your .xls file here</strong> or click to choose</div>
+      <div id="fileName"></div>
+      <input id="fileInput" type="file" accept=".xls" hidden>
+    </div>
+
+    <div class="row">
+      <button id="cleanBtn" class="primary" disabled>Clean file</button>
+      <a id="downloadLink" class="download" style="display:none">Download cleaned file</a>
+    </div>
+
+    <div id="status" class="status busy">Getting the cleaner ready… (first visit downloads a one-time engine)</div>
+    <div id="error" class="msg error"></div>
+
+    <div id="summary" class="summary">
+      <h2>Run summary</h2>
+      <div class="grid">
+        <div class="stat"><div class="n" id="stRowsIn">–</div><div class="l">Rows read in</div></div>
+        <div class="stat"><div class="n" id="stQuotes">–</div><div class="l">Quotes out</div></div>
+        <div class="stat"><div class="n" id="stOrdered">–</div><div class="l">Quotes ordered (has invoice)</div></div>
+        <div class="stat"><div class="n" id="stAmount">–</div><div class="l">Total amount</div></div>
+      </div>
+      <div class="flags" id="flags"></div>
+    </div>
+  </div>
+
+  <footer>
+    Runs entirely in your browser. No upload, no account, no data stored.
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
