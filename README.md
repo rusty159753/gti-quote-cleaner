@@ -56,30 +56,38 @@ processed entirely inside the tab.
 
 ## Maintaining the "Created By" name mapping
 
-Over time new operators or sources will appear in the export. The cleaner
-normalizes known names and **flags anything it doesn't recognize** in the run
-summary (it never guesses a name's correct spelling).
+The cleaner can normalize the **Created By** column so the same person is counted
+once (for example two spellings folded into one name). It **flags anything it does
+not recognize** in the run summary and never guesses a name's spelling.
 
-To add or change a name, edit the `CREATED_BY_MAP` near the top of `cleaner.py`:
+**The names are not stored in this code.** No operator names live in the
+repository. Each person enters the mapping in their own browser, where it is saved
+locally and never uploaded. This keeps the public site free to host while keeping
+real names off the public repo.
 
-```python
-CREATED_BY_MAP = {
-    "LEIA": "Leia",
-    "JAMIE": "Jamie",
-    "patrick": "Patrick",
-    "PATRICK": "Patrick",
-    "WEBSITE": "Website",
-}
-# Names that are already spelled correctly and should never be flagged:
-CREATED_BY_KNOWN = set(CREATED_BY_MAP.values()) | {"Andi", "Christopher"}
+To set it up, open the tool and expand **"Manage 'Created By' names (optional)"**.
+Enter one name per line as `WHAT THE EXPORT TYPES = Clean Name`, for example:
+
+```
+RAWNAME = Clean Name
+OTHERSPELLING = Clean Name
+CleanAlready = CleanAlready
 ```
 
-- To map a raw value to a clean name, add a line like `"NEWNAME": "New Name",`.
-- If a name already comes through spelled correctly, add it to the set on the
-  `CREATED_BY_KNOWN` line (e.g. `| {"Andi", "Christopher", "Dana"}`) so it isn't
-  flagged.
+- Map a raw value to the clean name you want (e.g. `SOMENAME = Some Name`).
+- If two different spellings should count as one person, map both to the same
+  clean name.
+- To keep a name that already comes through correctly and stop it being flagged,
+  map it to itself (`Some Name = Some Name`).
 
-That is the only piece most people will ever need to edit.
+Click **Save names** to store them in that browser. Use **Export file** to save a
+private `gti-created-by-names.json` you can keep somewhere safe, and **Import file**
+to load it into another browser or computer — so you set the list up once and reuse
+it. The mapping applies the next time you clean a file.
+
+> Because the names live only in each browser, a brand-new browser starts with an
+> empty list and will flag every name for review until you Save or Import a mapping.
+> That is expected — nothing is broken.
 
 ## If GTI changes its export format
 
@@ -106,9 +114,10 @@ recorded here so a future maintainer understands why.
    page break, the export repeats its single-value fields (Job Name, Created By,
    SQFT, etc.) on the continuation row while the Account Name wraps. When joining
    those fields the cleaner drops a fragment that exactly repeats the one before it,
-   so `VALLEY GLASS` + `BOISE, LLC.` becomes `VALLEY GLASS BOISE, LLC.` while
-   `HAUSFORD` + `HAUSFORD` stays `HAUSFORD`. Without this, page-split quotes would
-   show doubled names and unreadable SQFT values.
+   so a company name whose halves land on different pages (e.g. `ACME GLASS` +
+   `PORTLAND, LLC.`) joins to `ACME GLASS PORTLAND, LLC.`, while a job name repeated
+   on both rows (e.g. `JOBREF` + `JOBREF`) stays `JOBREF`. Without this, page-split
+   quotes would show doubled names and unreadable SQFT values.
 
 ## Deployment (GitHub Pages)
 

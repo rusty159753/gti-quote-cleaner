@@ -22,6 +22,17 @@
   const summaryEl = document.getElementById("summary");
   const flagsEl = document.getElementById("flags");
 
+  const namesText = document.getElementById("namesText");
+  const namesSave = document.getElementById("namesSave");
+  const namesExport = document.getElementById("namesExport");
+  const namesImport = document.getElementById("namesImport");
+  const namesFile = document.getElementById("namesFile");
+  const namesStatus = document.getElementById("namesStatus");
+
+  // The "Created By" mapping lives ONLY in this browser (localStorage). It is
+  // never uploaded and never stored in the code.
+  const NAMES_KEY = "gti_created_by_map_v1";
+
   let pyodide = null;
   let ready = false;
   let selectedFile = null;
@@ -40,6 +51,96 @@
     errorEl.classList.remove("show");
   }
 
+  // ---- "Created By" name mapping (browser-local) ------------------------
+
+  function loadNamesMap() {
+    try {
+      const raw = localStorage.getItem(NAMES_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      return map && typeof map === "object" ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function mapToText(map) {
+    return Object.keys(map).map((k) => k + " = " + map[k]).join("\n");
+  }
+
+  // Parse lines "RAW = Clean" (also accepts =>, ->, :). '#' starts a comment.
+  function textToMap(text) {
+    const map = {};
+    let count = 0;
+    const lines = text.split(/\r?\n/);
+    for (let raw of lines) {
+      const line = raw.replace(/#.*$/, "").trim();
+      if (!line) continue;
+      const m = line.match(/^(.*?)\s*(?:=>|->|[:=])\s*(.*)$/);
+      if (!m) throw new Error('Could not read this line: "' + raw.trim() + '". Use RAW = Clean Name.');
+      const key = m[1].trim();
+      const val = m[2].trim();
+      if (!key || !val) throw new Error('Both sides are required on: "' + raw.trim() + '".');
+      map[key] = val;
+      count++;
+    }
+    return { map: map, count: count };
+  }
+
+  function setNamesStatus(text, ok) {
+    namesStatus.textContent = text || "";
+    namesStatus.classList.toggle("ok", !!ok);
+  }
+
+  namesSave.addEventListener("click", () => {
+    try {
+      const { map, count } = textToMap(namesText.value);
+      localStorage.setItem(NAMES_KEY, JSON.stringify(map));
+      namesText.value = mapToText(map);
+      setNamesStatus("Saved " + count + " name" + (count === 1 ? "" : "s") + " to this browser.", true);
+    } catch (err) {
+      setNamesStatus(err.message, false);
+    }
+  });
+
+  namesExport.addEventListener("click", () => {
+    let map;
+    try {
+      map = textToMap(namesText.value).map;
+    } catch (err) {
+      setNamesStatus(err.message, false);
+      return;
+    }
+    const blob = new Blob([JSON.stringify(map, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "gti-created-by-names.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setNamesStatus("Exported to gti-created-by-names.json — keep it somewhere private.", true);
+  });
+
+  namesImport.addEventListener("click", () => namesFile.click());
+  namesFile.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const map = JSON.parse(await file.text());
+      if (!map || typeof map !== "object" || Array.isArray(map)) {
+        throw new Error("That file is not a names mapping.");
+      }
+      namesText.value = mapToText(map);
+      localStorage.setItem(NAMES_KEY, JSON.stringify(map));
+      setNamesStatus("Imported " + Object.keys(map).length + " names and saved to this browser.", true);
+    } catch (err) {
+      setNamesStatus("Could not import: " + err.message, false);
+    } finally {
+      namesFile.value = "";
+    }
+  });
+
   // ---- Pyodide initialization ------------------------------------------
 
   async function init() {
@@ -57,10 +158,12 @@
       await micropip.install(["xlrd", "openpyxl"]);
 
       setStatus("Loading the cleaning rules…", true);
-      const py = await fetch("cleaner.py");
+      // no-store so an updated cleaner.py always takes effect (it is small and
+      // is the file most likely to be edited).
+      const py = await fetch("cleaner.py", { cache: "no-store" });
       if (!py.ok) throw new Error("Could not load cleaner.py (" + py.status + ").");
       pyodide.FS.writeFile("cleaner.py", await py.text());
-      pyodide.runPython("import cleaner");
+      pyodide.runPython("import cleaner\nimport json as _json");
 
       ready = true;
       drop.classList.remove("disabled");
@@ -143,9 +246,10 @@
       const buf = await selectedFile.arrayBuffer();
       const bytes = new Uint8Array(buf);
       pyodide.globals.set("_raw_bytes", bytes);
+      pyodide.globals.set("_cb_json", JSON.stringify(loadNamesMap()));
 
       const resultProxy = await pyodide.runPythonAsync(
-        "cleaner.clean_workbook(bytes(_raw_bytes.to_py()))"
+        "cleaner.clean_workbook(bytes(_raw_bytes.to_py()), _json.loads(_cb_json))"
       );
 
       const ok = resultProxy.get("ok");
@@ -242,5 +346,6 @@
     ));
   }
 
+  namesText.value = mapToText(loadNamesMap());
   init();
 })();

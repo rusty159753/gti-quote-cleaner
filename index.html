@@ -113,6 +113,34 @@
   .allclear { color: var(--ok); font-size: 14px; margin-top: 12px; }
   footer { margin-top: 28px; color: var(--muted); font-size: 13px; text-align: center; }
   code { background: #eef2f5; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  details.names { margin-top: 16px; }
+  details.names summary {
+    cursor: pointer;
+    font-weight: 600;
+    list-style: none;
+  }
+  details.names summary::-webkit-details-marker { display: none; }
+  details.names summary::before { content: "▸ "; color: var(--muted); }
+  details.names[open] summary::before { content: "▾ "; }
+  .hint { color: var(--muted); font-size: 13px; margin: 10px 0; }
+  textarea#namesText {
+    width: 100%;
+    min-height: 130px;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 13px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    resize: vertical;
+  }
+  button.ghost {
+    background: #eef2f5;
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  button.ghost:hover { background: #e3e9ef; }
+  .names-status { margin-top: 10px; font-size: 13px; color: var(--muted); min-height: 18px; }
+  .names-status.ok { color: var(--ok); }
 </style>
 </head>
 <body>
@@ -150,6 +178,26 @@
       <div class="flags" id="flags"></div>
     </div>
   </div>
+
+  <details class="card names" id="namesPanel">
+    <summary>Manage “Created By” names (optional)</summary>
+    <p class="hint">
+      One name per line, as <code>WHAT THE EXPORT TYPES = Clean Name</code>. This lets
+      the same person be counted once (e.g. two spellings mapped to one name). To keep
+      a name that is already spelled correctly and stop it being flagged, map it to
+      itself. These names are saved <strong>only in this browser</strong> — they are
+      never uploaded or stored in the code. Use Export to keep a private copy you can
+      Import on another computer.
+    </p>
+    <textarea id="namesText" spellcheck="false" placeholder="RAWNAME = Clean Name&#10;OTHERSPELLING = Clean Name&#10;CleanAlready = CleanAlready"></textarea>
+    <div class="row">
+      <button id="namesSave" class="primary" type="button">Save names</button>
+      <button id="namesExport" class="ghost" type="button">Export file</button>
+      <button id="namesImport" class="ghost" type="button">Import file</button>
+      <input id="namesFile" type="file" accept=".json,application/json" hidden>
+    </div>
+    <div id="namesStatus" class="names-status"></div>
+  </details>
 
   <footer>
     Runs entirely in your browser. No upload, no account, no data stored.

@@ -56,16 +56,18 @@ FINAL_TO_SOURCE = [
 FINAL_COLUMNS = [f for f, _ in FINAL_TO_SOURCE]
 REQUIRED_SOURCE_HEADERS = [s for _, s in FINAL_TO_SOURCE]
 
-# 6.8 Created By canonical map. Values not covered are left as-is and flagged.
-CREATED_BY_MAP = {
-    "LEIA": "Leia",
-    "JAMIE": "Jamie",
-    "patrick": "Patrick",
-    "PATRICK": "Patrick",
-    "WEBSITE": "Website",
-}
-# Already-clean names count as known so they are never flagged (PRD 6.8).
-CREATED_BY_KNOWN = set(CREATED_BY_MAP.values()) | {"Andi", "Christopher"}
+# 6.8 Created By canonical map.
+#
+# The mapping is intentionally EMPTY in this public repository so that no real
+# operator names are committed. It is supplied at run time by the browser (the
+# "Manage names" panel, stored locally per-user) and threaded through
+# clean_workbook(..., created_by_map=...).
+#
+# Shape: { "RAW AS TYPED": "Clean Name", ... }. To leave an already-clean name
+# untouched and un-flagged, map it to itself ("Some Name": "Some Name"). A name
+# that is neither a key nor one of the clean values is left exactly as-is and
+# flagged in the run summary for human review (never guessed).
+DEFAULT_CREATED_BY_MAP = {}
 
 # 6.4 field roles.
 SINGLE_VALUE_FIELDS = {"Account No.", "Quote", "Est. Date", "Amount", "Invoice"}
@@ -213,9 +215,10 @@ def _join_fragments(fragments, single_line):
     """Space-join fragments, collapsing consecutive identical fragments.
 
     The consecutive-duplicate collapse handles page-split records where the
-    export repeats a single-value field on the continuation row (e.g. Job Name
-    'HAUSFORD' appearing on both physical rows). Genuinely different wrap
-    fragments (e.g. 'VALLEY GLASS' + 'BOISE, LLC.') are preserved.
+    export repeats a single-value field on the continuation row (e.g. a Job Name
+    appearing identically on both physical rows). Genuinely different wrap
+    fragments (e.g. a company name whose first half ends one page and second
+    half begins the next, 'ACME GLASS' + 'PORTLAND, LLC.') are preserved.
     """
     kept = []
     for frag in fragments:
@@ -294,7 +297,7 @@ def _consolidate(data_rows, col):
 # Field finalization
 # ---------------------------------------------------------------------------
 
-def _finalize_record(rec, flags):
+def _finalize_record(rec, flags, cb_map, cb_known):
     """Produce the 12 output values for one record."""
     out = {}
 
@@ -320,7 +323,7 @@ def _finalize_record(rec, flags):
 
     # Created By: joined, then canonical map (6.8); unknown left as-is + flagged.
     cb = _join_fragments(rec["frag"]["Created By"], single_line=True)
-    out["Created By"] = _map_created_by(cb, flags)
+    out["Created By"] = _map_created_by(cb, flags, cb_map, cb_known)
 
     # Product: joined then split on ';' to newline-separated specs (6.4).
     out["Product"] = _finalize_product(rec["product"])
@@ -351,12 +354,12 @@ def _sqft_to_number(text):
         return None  # doubled/garbled SQFT -> leave empty rather than guess
 
 
-def _map_created_by(value, flags):
+def _map_created_by(value, flags, cb_map, cb_known):
     if value == "":
         return ""
-    if value in CREATED_BY_MAP:
-        return CREATED_BY_MAP[value]
-    if value in CREATED_BY_KNOWN:
+    if value in cb_map:
+        return cb_map[value]
+    if value in cb_known:
         return value
     flags["unknown_created_by"].add(value)
     return value
@@ -471,14 +474,25 @@ def build_summary(raw_row_count, data_row_count, empty_cols_dropped,
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def clean_workbook(raw_bytes):
+def clean_workbook(raw_bytes, created_by_map=None):
+    """Clean a raw .xls export.
+
+    created_by_map: optional { "RAW": "Clean" } mapping supplied at run time
+    (no operator names are stored in this repository). Unknown names are left
+    as-is and flagged.
+    """
     try:
-        return _clean(raw_bytes)
+        return _clean(raw_bytes, created_by_map)
     except CleaningError as exc:
         return {"ok": False, "error": str(exc), "xlsx": None, "summary": None}
 
 
-def _clean(raw_bytes):
+def _clean(raw_bytes, created_by_map=None):
+    cb_map = dict(created_by_map) if created_by_map else dict(DEFAULT_CREATED_BY_MAP)
+    # A name is "known" (and never flagged) if it is either a raw key or one of
+    # the clean target values in the supplied map.
+    cb_known = set(cb_map.keys()) | set(cb_map.values())
+
     grid = _read_grid(raw_bytes)
     raw_row_count = len(grid)
 
@@ -523,7 +537,7 @@ def _clean(raw_bytes):
         "unknown_created_by": set(),
         "nonadjacent_dupes": cflags["nonadjacent_dupes"],
     }
-    rows = [_finalize_record(rec, flags) for rec in records]
+    rows = [_finalize_record(rec, flags, cb_map, cb_known) for rec in records]
 
     # Gate 3 (PRD 9.3): output row count == distinct-adjacent Quote count.
     distinct_adjacent = _count_distinct_adjacent(data_rows, col["Quote"])
