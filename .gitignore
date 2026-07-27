@@ -3,6 +3,9 @@
 *.xlsx
 _tmptest.*
 _local_validation/
+# Planning and handoff notes. These quote real figures, quote numbers and
+# employee names, so they must never reach this public repo.
+Build files/
 __pycache__/
 *.pyc
 .venv/
