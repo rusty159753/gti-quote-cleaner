@@ -117,6 +117,16 @@ the engine once (~7 MB) and the browser caches it; later visits are fast. **None
 this transmits your file** — only program code is fetched, and your spreadsheet is
 processed entirely inside the tab.
 
+Two folders exist in the local working copy but are deliberately **not published**,
+because both quote real figures and real names:
+
+| Local-only folder | Purpose |
+|---|---|
+| `_local_validation/` | Regression harness. Runs the pipeline against a private sample export and asserts a fixed baseline. |
+| `Build files/` | Planning and session handoff notes. |
+
+Both are listed in `.gitignore`. Keep them there.
+
 ## Maintaining the "Created By" name mapping
 
 The cleaner can normalize the **Created By** column so the same person is counted
@@ -218,4 +228,6 @@ and `README.md` to the repository, then enable **GitHub Pages** on the `main`
 branch (root). The page is served at the Pages URL; share that link with users.
 
 > Do not commit real quote exports. `.gitignore` already excludes `*.xls` /
-> `*.xlsx` so sample data never lands in this public repo.
+> `*.xlsx`, plus the `_local_validation/` and `Build files/` folders, so neither
+> sample data nor internal notes land in this public repo. Stage files by name
+> rather than with `git add -A`.
