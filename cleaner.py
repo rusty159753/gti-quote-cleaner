@@ -53,8 +53,47 @@ FINAL_TO_SOURCE = [
     ("Created By",   "Created By"),
     ("Internal Note","Internal Note"),
 ]
-FINAL_COLUMNS = [f for f, _ in FINAL_TO_SOURCE]
+SOURCE_COLUMNS = [f for f, _ in FINAL_TO_SOURCE]
 REQUIRED_SOURCE_HEADERS = [s for _, s in FINAL_TO_SOURCE]
+
+# 6.3b derived columns: computed from the GTI Comments text, not read from any
+# source header. REQUIRED_SOURCE_HEADERS stays source-only because it drives the
+# "is this the right report?" validation gate — dropping GTI Comments from the
+# OUTPUT below does not remove the source "Comments" header from that gate, so
+# the comment is still read and the derivations still work.
+DERIVED_COLUMNS = ["Invoice Date", "Quote Category"]
+
+# Output schema, in exact output order. GTI Comments is intentionally NOT here:
+# its free text is distilled into Quote Category + Invoice Date and no longer
+# emitted, but out["GTI Comments"] is still computed internally to drive those
+# derivations. These are internal field names (the dict keys used everywhere in
+# the writer); the displayed header text comes from DISPLAY_HEADERS below.
+FINAL_COLUMNS = [
+    "Account No.", "Account Name", "Quote", "Est. Date", "Quote Category",
+    "Job Name", "Amount", "Product", "SQFT", "Created By", "Internal Note",
+    "Invoice", "Invoice Date",
+]
+
+# Displayed header text, decoupled from the internal field names above. Used ONLY
+# for the header row cells (and therefore the Excel Table column names, which are
+# read from those cells). All data-writing branch logic and width lookups stay
+# keyed by the internal field name. The two derived date columns get distinct
+# labels ("Date" / "Ordered") so the table has no duplicate column names.
+DISPLAY_HEADERS = {
+    "Account No.":    "Account",
+    "Account Name":   "Customer",
+    "Quote":          "Quote",
+    "Est. Date":      "Date",
+    "Quote Category": "Quote Category",
+    "Job Name":       "Job Name",
+    "Amount":         "Amount",
+    "Product":        "Product",
+    "SQFT":           "SQFT",
+    "Created By":     "Created By",
+    "Internal Note":  "Internal Note",
+    "Invoice":        "Invoice",
+    "Invoice Date":   "Ordered",
+}
 
 # 6.8 Created By canonical map.
 #
@@ -78,10 +117,69 @@ SPACE_JOINED_FIELDS = {"Account Name", "Job Name", "GTI Comments",
 
 ID_TEXT_FIELDS = {"Account No.", "Quote", "Invoice"}   # 6.6 keep as text ('@')
 NUMERIC_FIELDS = {"Amount", "SQFT"}                    # 6.7 numbers, '#,##0.00'
-WRAP_FIELDS = {"Product", "GTI Comments", "Job Name", "Account Name"}  # 6.11
+DATE_FIELDS = {"Est. Date", "Invoice Date"}            # 6.5 real dates, 'mm/dd/yyyy'
+WRAP_FIELDS = {"Product", "GTI Comments", "Job Name", "Account Name",
+               "Internal Note"}  # 6.11
 
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 NUMERIC_QUOTE_RE = re.compile(r"^\d+$")
+
+
+# ---------------------------------------------------------------------------
+# 6.12 GTI Comments / Created By derivations (Invoice Date + Quote Category).
+#
+# Quote Category used to be derived purely from the shape of the GTI Comments
+# text. That broke down for invoiced quotes: GTI Comments holds only the
+# LATEST lifecycle event, so once a quote is invoiced its comment becomes
+# "Created Invoice Number: N on <date>" and any earlier origin marker (web
+# quote / duplicate) is gone for good. Comment shape alone can no longer
+# answer "was this quote originally a web quote" once it has been invoiced.
+#
+# Created By does not have that problem — it is a separate source column that
+# invoicing never touches. Every quote whose comment says "Estimate created
+# from Web Quote N" has Created By == WEBSITE, whether or not it was later
+# invoiced, and WEBSITE never appears on a duplicated or blank-comment quote.
+# So Quote Category is now a 3-way split: duplication is checked first from
+# the comment (it is defined by the action taken, and duplication is always
+# performed by a CSR, never through the website, so it can never collide with
+# the WEBSITE check); web origin is then checked from the RAW Created By
+# value; everything else — including every blank-comment CSR-handled quote —
+# falls to Phone/Email. There is no residual "Other" category: an unrecognized
+# comment shape is still flagged (see _is_recognized_comment_shape) but no
+# longer changes what category a row gets.
+#
+# Invoice Date is unrelated to Quote Category: it is derived purely from
+# INVOICE_COMMENT_RE matching the comment, independent of what category the
+# row ends up in.
+# ---------------------------------------------------------------------------
+
+CATEGORY_DUPLICATED = "Duplicated Quote"  # comment matches DUPLICATE_QUOTE_COMMENT_RE
+CATEGORY_WEB = "Web Quote"                # else, raw Created By == "WEBSITE"
+CATEGORY_PHONE_EMAIL = "Phone/Email"      # else (default; includes blank comments)
+
+CATEGORY_ORDER = [CATEGORY_DUPLICATED, CATEGORY_WEB, CATEGORY_PHONE_EMAIL]
+
+INVOICE_COMMENT_RE = re.compile(r"^Created Invoice Number:\s*(\d+)\s+on\b\s*(.*)$")
+WEB_QUOTE_COMMENT_RE = re.compile(r"^Estimate created from Web Quote\s+\d+\s*$")
+DUPLICATE_QUOTE_COMMENT_RE = re.compile(r"^Quote based on Est No:\s*\d+\s*$")
+
+# The date fragment following "on" (e.g. "Jun 30 2026 10:25AM"). Invoice Date is
+# stored date-only to match the Est. Date column, so the time is parsed but
+# discarded. A few comments carry the date with no time at all; those still
+# yield a date.
+INVOICE_DATE_RE = re.compile(r"^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\b")
+
+# When a record straddles a page break the export can push the date fragment of
+# its invoice comment onto the following page's sub-header line, which furniture
+# removal then discards. Such a line holds a bare date-time and nothing else in
+# the Comments column, which makes the value recoverable rather than lost. See
+# _collect_stranded_dates.
+STRANDED_DATE_RE = re.compile(
+    r"^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+\d{1,2}:\d{2}\s*[AaPp][Mm]$")
+
+# Explicit month table rather than strptime('%b'), which is locale-dependent.
+MONTH_ABBR = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+              "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
 
 
 class CleaningError(Exception):
@@ -294,11 +392,122 @@ def _consolidate(data_rows, col):
 
 
 # ---------------------------------------------------------------------------
+# GTI Comments derivations (PRD 6.12)
+# ---------------------------------------------------------------------------
+
+def _month_day_year(mon, day, year):
+    """A real date from an abbreviated month / day / year, or None if invalid."""
+    month = MONTH_ABBR.get(mon.strip().lower())
+    if month is None:
+        return None
+    try:
+        return datetime.date(int(year), month, int(day))
+    except ValueError:
+        return None
+
+
+def _parse_comment_date(fragment):
+    """Date from a comment date fragment, or None if there isn't a real one.
+
+    'Jun 30 2026 10:25AM' and 'Jun 30 2026' both give date(2026, 6, 30); the
+    time of day is deliberately dropped. '' (a comment truncated at "on") and
+    anything unparseable give None.
+    """
+    if not fragment:
+        return None
+    m = INVOICE_DATE_RE.match(fragment.strip())
+    if not m:
+        return None
+    return _month_day_year(m.group(1), m.group(2), m.group(3))
+
+
+def _derive_quote_category(comment, created_by_raw):
+    """Quote Category for one finalized record (PRD 6.12, Created-By-aware).
+
+    Priority: Duplicated Quote (comment shape) first and unconditionally, then
+    Web Quote (raw, pre-mapping Created By == "WEBSITE"), then Phone/Email as
+    the catch-all. created_by_raw must be the joined Created By fragment BEFORE
+    _map_created_by() runs, so a user's optional name-normalization mapping can
+    never relabel a web-origin quote by remapping the literal string "WEBSITE".
+    """
+    text = comment.strip()
+    if DUPLICATE_QUOTE_COMMENT_RE.match(text):
+        return CATEGORY_DUPLICATED
+    if created_by_raw.strip().upper() == "WEBSITE":
+        return CATEGORY_WEB
+    return CATEGORY_PHONE_EMAIL
+
+
+def _invoice_date_fragment(comment):
+    """Raw text following "on" in an invoice comment, or None if it isn't one.
+
+    Independent of Quote Category: fires purely off INVOICE_COMMENT_RE against
+    the comment text. The fragment may be '' when the export truncated the
+    comment right at "on".
+    """
+    m = INVOICE_COMMENT_RE.match(comment.strip())
+    if m:
+        return m.group(2).strip()
+    return None
+
+
+def _is_recognized_comment_shape(comment):
+    """True for a blank comment or one of the 3 known non-blank shapes.
+
+    Purely a data-quality safety net (flags["unrecognized_comments"]),
+    decoupled from Quote Category — format drift should surface here even
+    though WEB_QUOTE_COMMENT_RE no longer drives a category on its own.
+    """
+    text = comment.strip()
+    if text == "":
+        return True
+    return bool(
+        INVOICE_COMMENT_RE.match(text)
+        or WEB_QUOTE_COMMENT_RE.match(text)
+        or DUPLICATE_QUOTE_COMMENT_RE.match(text)
+    )
+
+
+def _collect_stranded_dates(grid, acol, qcol, ccol):
+    """Map quote -> date for invoice dates orphaned on a page sub-header line.
+
+    Scanned over the full grid, before furniture removal, because that is where
+    the fragment still exists. A furniture line whose Comments cell holds a bare
+    date-time and nothing else is the tail of the invoice comment belonging to
+    the record that was in progress when the page broke.
+
+    The result is only consulted when that record's own comment ends at "on"
+    with no date of its own (see _finalize_record), so a value found here can
+    never displace a date the comment already carries.
+    """
+    stranded = {}
+    active = None
+    for row in grid:
+        if _is_furniture(row, acol, qcol):
+            fragment = _text(row[ccol]) if ccol < len(row) else ""
+            fragment = re.sub(r"\s+", " ", fragment).strip()
+            m = STRANDED_DATE_RE.match(fragment)
+            if m and active:
+                d = _month_day_year(m.group(1), m.group(2), m.group(3))
+                if d is not None:
+                    stranded[active] = d
+            continue
+        quote = _text(row[qcol])
+        if quote:
+            active = quote
+    return stranded
+
+
+# ---------------------------------------------------------------------------
 # Field finalization
 # ---------------------------------------------------------------------------
 
-def _finalize_record(rec, flags, cb_map, cb_known):
-    """Produce the 12 output values for one record."""
+def _finalize_record(rec, flags, cb_map, cb_known, stranded):
+    """Produce the output values for one record.
+
+    stranded: the quote -> date map from _collect_stranded_dates, consulted only
+    for an invoice comment that carries no date of its own.
+    """
     out = {}
 
     # Single-value identity/date/number fields (from the primary row).
@@ -327,6 +536,29 @@ def _finalize_record(rec, flags, cb_map, cb_known):
 
     # Product: joined then split on ';' to newline-separated specs (6.4).
     out["Product"] = _finalize_product(rec["product"])
+
+    # Quote Category (6.12): Duplicated Quote > Web Quote (raw Created By) >
+    # Phone/Email. Uses `cb`, the pre-mapping raw value, not out["Created By"].
+    out["Quote Category"] = _derive_quote_category(out["GTI Comments"], cb)
+
+    # Invoice Date (6.12): fully independent of Quote Category, fired purely
+    # off the comment text matching INVOICE_COMMENT_RE.
+    date_fragment = _invoice_date_fragment(out["GTI Comments"])
+    invoice_date = None
+    if date_fragment is not None:
+        invoice_date = _parse_comment_date(date_fragment)
+        if invoice_date is None:
+            invoice_date = stranded.get(out["Quote"])
+            if invoice_date is not None:
+                flags["recovered_invoice_dates"].append(out["Quote"])
+        if invoice_date is None:
+            flags["invoice_without_date"].append(out["Quote"])
+
+    # Data-quality safety net, decoupled from Quote Category.
+    if not _is_recognized_comment_shape(out["GTI Comments"]):
+        flags["unrecognized_comments"].append(out["GTI Comments"])
+
+    out["Invoice Date"] = ("date", invoice_date) if invoice_date else ("blank", None)
 
     return out
 
@@ -378,10 +610,13 @@ def _finalize_product(fragments):
 # Workbook writing (PRD 6.11)
 # ---------------------------------------------------------------------------
 
+# Every column in FINAL_COLUMNS needs an entry here; the lookup is per-column
+# and a missing key is a KeyError, not a silent default.
 COLUMN_WIDTHS = {
-    "Account No.": 12, "Account Name": 26, "Quote": 12, "Est. Date": 12,
+    "Account No.": 10, "Account Name": 26, "Quote": 12, "Est. Date": 12,
     "Job Name": 20, "Amount": 12, "Invoice": 12, "GTI Comments": 28,
-    "Product": 34, "SQFT": 10, "Created By": 12, "Internal Note": 24,
+    "Product": 34, "SQFT": 10, "Created By": 12, "Internal Note": 34,
+    "Invoice Date": 13, "Quote Category": 16,
 }
 
 
@@ -396,7 +631,7 @@ def _write_workbook(rows):
     wrap = Alignment(wrap_text=True, vertical="top")
     top = Alignment(vertical="top")
 
-    ws.append(FINAL_COLUMNS)
+    ws.append([DISPLAY_HEADERS[name] for name in FINAL_COLUMNS])
     for c, name in enumerate(FINAL_COLUMNS, start=1):
         cell = ws.cell(row=1, column=c)
         cell.font = header_font
@@ -412,7 +647,7 @@ def _write_workbook(rows):
             if name in ID_TEXT_FIELDS:
                 cell.value = value if value != "" else None
                 cell.number_format = "@"
-            elif name == "Est. Date":
+            elif name in DATE_FIELDS:
                 kind, dval = value
                 if kind == "date":
                     cell.value = dval
@@ -457,6 +692,16 @@ def build_summary(raw_row_count, data_row_count, empty_cols_dropped,
                   records, rows, flags):
     invoiced = sum(1 for out in rows if out["Invoice"] != "")
     total_amount = sum((out["Amount"] or 0.0) for out in rows)
+
+    # Category counts, emitted in a fixed order so the summary is stable. Every
+    # row now gets one of the 3 real category values (no blank/residual bucket).
+    counts = {c: 0 for c in CATEGORY_ORDER}
+    for out in rows:
+        counts[out["Quote Category"]] += 1
+    categories = {c: counts[c] for c in CATEGORY_ORDER}
+
+    invoice_dates = sum(1 for out in rows if out["Invoice Date"][0] == "date")
+
     return {
         "rows_in": raw_row_count,
         "rows_after_furniture": data_row_count,
@@ -464,9 +709,14 @@ def build_summary(raw_row_count, data_row_count, empty_cols_dropped,
         "quotes_out": len(records),
         "quotes_ordered": invoiced,
         "total_amount": round(total_amount, 2),
+        "comment_categories": categories,
+        "invoice_dates_extracted": invoice_dates,
+        "invoice_dates_recovered_from_page_break": len(flags["recovered_invoice_dates"]),
         "flag_unparseable_dates": sorted(set(flags["unparseable_dates"])),
         "flag_unknown_created_by": sorted(flags["unknown_created_by"]),
         "flag_nonadjacent_duplicate_quotes": sorted(set(flags["nonadjacent_dupes"])),
+        "flag_invoice_comments_without_date": sorted(set(flags["invoice_without_date"])),
+        "flag_unrecognized_comments": sorted(set(flags["unrecognized_comments"]))[:20],
     }
 
 
@@ -531,13 +781,22 @@ def _clean(raw_bytes, created_by_map=None):
         if all(_text(row[c]) == "" for row in data_rows if c < len(row)):
             empty_cols_dropped += 1
 
+    # Invoice-date fragments orphaned on page sub-header lines (6.12). Collected
+    # from the full grid because furniture removal has already dropped them from
+    # data_rows.
+    stranded = _collect_stranded_dates(grid, acol, qcol, col["GTI Comments"])
+
     records, cflags = _consolidate(data_rows, col)
     flags = {
         "unparseable_dates": [],
         "unknown_created_by": set(),
         "nonadjacent_dupes": cflags["nonadjacent_dupes"],
+        "recovered_invoice_dates": [],
+        "invoice_without_date": [],
+        "unrecognized_comments": [],
     }
-    rows = [_finalize_record(rec, flags, cb_map, cb_known) for rec in records]
+    rows = [_finalize_record(rec, flags, cb_map, cb_known, stranded)
+            for rec in records]
 
     # Gate 3 (PRD 9.3): output row count == distinct-adjacent Quote count.
     distinct_adjacent = _count_distinct_adjacent(data_rows, col["Quote"])

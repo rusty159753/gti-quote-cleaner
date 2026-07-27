@@ -20,23 +20,86 @@ produces the same output):
 - Removes the repeating page furniture (the `QUOTES LIST` / `FOR DATE RANGE`
   banners and the repeated column-header rows).
 - Drops the empty spacer columns the export uses for PDF layout.
-- Renames and reorders columns to a clean 12-column layout.
+- Renames and reorders columns to a clean 13-column layout.
 - **Consolidates each quote into a single row**, even when a quote was split
   across several physical rows or across a page break.
-- Turns Est. Date into a real date (`mm/dd/yyyy`), Amount and SQFT into formatted
-  numbers, and keeps Account No. / Quote / Invoice as text (so long ID codes never
-  turn into scientific notation).
+- Turns the quote date into a real date (`mm/dd/yyyy`), Amount and SQFT into
+  formatted numbers, and keeps Account / Quote / Invoice as text (so long ID codes
+  never turn into scientific notation).
 - Normalizes the **Created By** names so the same person is counted once.
 - Splits each product spec onto its own line inside the Product cell.
+- Distills the free-text **GTI Comments** into two filterable columns —
+  **Quote Category** and **Ordered** (the invoice date) — and no longer emits the
+  raw comment column itself (see below).
 - Produces a **run summary**: rows read in, quotes out, quotes ordered (those with
-  an invoice), and any items that need a human's eye.
+  an invoice), a count per quote category, and any items that need a human's eye.
 
-Output columns, in order:
+Output columns, in order (displayed header in **bold**, internal field in
+parentheses where it differs):
 
 ```
-Account No. | Account Name | Quote | Est. Date | Job Name | Amount |
-Invoice | GTI Comments | Product | SQFT | Created By | Internal Note
+Account (Account No.) | Customer (Account Name) | Quote | Date (Est. Date) |
+Quote Category | Job Name | Amount | Product | SQFT | Created By |
+Internal Note | Invoice | Ordered (Invoice Date)
 ```
+
+- The free-text **GTI Comments** column is no longer emitted. Its content is
+  distilled into **Quote Category** and **Ordered** (both derived from it), so the
+  wide unstructured column no longer clutters the sheet.
+- Displayed headers are shortened for readability: Account No. → **Account**,
+  Account Name → **Customer**, Est. Date → **Date**, Invoice Date → **Ordered**.
+- **Internal Note now wraps** and is set to the same width as the **Product**
+  column; the **Account** column is narrowed to fit its ~4-digit account numbers.
+
+## Ordered (invoice date) and Quote Category
+
+**Quote Category is a 3-value field: `Duplicated Quote`, `Web Quote`, or
+`Phone/Email`.** It used to be derived purely from the shape of the GTI Comments
+text, but that broke down for invoiced quotes: GTI Comments holds only the
+**latest** lifecycle event, so once a quote is invoiced its comment becomes
+`Created Invoice Number: N on <date>` and any earlier web-quote or duplicate
+marker is gone for good — comment shape alone can no longer say "was this
+originally a web quote" once it's been invoiced.
+
+**Created By** does not have that problem — it's a separate export column that
+invoicing never touches. In the reference export, every quote whose comment
+says `Estimate created from Web Quote N` has Created By exactly `WEBSITE` (63
+of 63), and that holds whether or not the quote was later invoiced (67 more
+invoiced quotes still show `Created By == WEBSITE`). `WEBSITE` never appears
+on a duplicated or blank-comment quote. So the rule is now:
+
+| Priority | Quote Category | Rule |
+|---|---|---|
+| 1 | `Duplicated Quote` | Comment matches `Quote based on Est No: N` |
+| 2 | `Web Quote` | else, raw (pre-name-mapping) Created By == `WEBSITE` |
+| 3 | `Phone/Email` | else — every blank-comment quote (a CSR took a call or email) and every invoiced quote whose Created By is a person, not WEBSITE |
+
+Reference-export counts: `Duplicated Quote` = 48, `Web Quote` = 130,
+`Phone/Email` = 739 (48 + 130 + 739 = 917, the full quote count).
+
+**Ordered (Invoice Date) is now fully independent of Quote Category.** It is
+derived purely from a comment matching `Created Invoice Number: N on <date>`,
+regardless of what category the row ends up in:
+
+- **Ordered is a real date** (`mm/dd/yyyy`), so it sorts and filters like the quote
+  **Date**. It is stored **date-only** — the time of day in the comment is
+  dropped. A comment the cleaner cannot read a date from leaves the cell blank and
+  is reported in the run summary; nothing is ever guessed or back-filled.
+- The invoice **number** is not duplicated into a new column: it is already in the
+  existing `Invoice` column, and across the reference export the two agreed on all
+  350 invoiced quotes.
+- **A comment that matches none of the three known shapes** (invoice, web-quote,
+  duplicate) is still flagged in the run summary (`flag_unrecognized_comments`),
+  even though it no longer changes Quote Category — this should normally be zero,
+  and a non-zero count means GTI started writing a comment shape nobody has seen
+  before. Pass the examples along so the pattern can be added.
+
+One wrinkle worth knowing about: when a quote lands on a page break, the export can
+push the tail of its invoice comment (`... on Jun 30 2026 7:32AM`) onto the next
+page's header line, leaving the visible comment ending at `on`. Those lines are
+otherwise discarded as page furniture. The cleaner picks that date back up — it is
+the only text on such a line and it is only ever used for a comment that has no
+date of its own — and reports how many it rebuilt.
 
 ## Files
 
@@ -98,10 +161,15 @@ rather than producing a wrong file — it will name the missing column. If that
 happens, update the header labels in the `FINAL_TO_SOURCE` table in `cleaner.py` to
 match the new export.
 
-## Two deliberate design decisions
+`FINAL_TO_SOURCE` covers only the columns copied from the export. Invoice Date and
+Quote Category are listed separately in `DERIVED_COLUMNS`, and the comment shapes
+they recognize live in the regular expressions just below it — that is the place to
+add a new comment pattern if `Other` ever shows a non-zero count.
 
-These are the only two places where the implementation makes an explicit judgment
-beyond the literal wording of the spec. Both are safe and deterministic; they are
+## Four deliberate design decisions
+
+These are the only places where the implementation makes an explicit judgment
+beyond the literal wording of the spec. All are safe and deterministic; they are
 recorded here so a future maintainer understands why.
 
 1. **Est. Date accepts real Excel dates as well as `yyyy-mm-dd` text.** The
@@ -118,6 +186,30 @@ recorded here so a future maintainer understands why.
    `PORTLAND, LLC.`) joins to `ACME GLASS PORTLAND, LLC.`, while a job name repeated
    on both rows (e.g. `JOBREF` + `JOBREF`) stays `JOBREF`. Without this, page-split
    quotes would show doubled names and unreadable SQFT values.
+
+3. **An invoice date stranded on a page-header line is recovered.** A page break
+   can leave the date fragment of an invoice comment on the following page's
+   sub-header row, which furniture removal correctly discards — the visible comment
+   then ends at `on`. Such a row holds a bare date-time in the Comments column and
+   nothing else, so the value is identifiable rather than lost. The cleaner reads it
+   back, but only ever applies it to a comment that carries no date of its own, so a
+   stray match can never overwrite a real value. In the reference export this
+   affected 7 of 350 invoiced quotes, and the run summary reports the count.
+
+4. **Quote Category uses Created By, not just Comments, to detect web origin —
+   checked against the RAW, pre-name-mapping value.** GTI Comments only ever
+   holds the latest lifecycle event, so invoicing permanently overwrites a
+   quote's original "Estimate created from Web Quote N" comment; Created By is
+   never touched by invoicing, so it stays a reliable signal. This is grounded
+   in the real export (100% correlation, 0 exceptions: every Web-Quote-shaped
+   comment has Created By == WEBSITE, whether or not later invoiced) and
+   confirmed by the business owner — duplicated quotes are always CSR-created
+   and can never happen through the website, so there is no ambiguity between
+   the Duplicated Quote and Web Quote checks. The RAW Created By value (before
+   the optional per-browser name-normalization mapping runs) is used
+   specifically so that mapping — an unrelated feature for tidying operator
+   names — can never accidentally relabel the literal string `WEBSITE` and
+   misclassify a web-origin quote.
 
 ## Deployment (GitHub Pages)
 

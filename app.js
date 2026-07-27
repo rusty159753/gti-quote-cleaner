@@ -20,6 +20,7 @@
   const statusEl = document.getElementById("status");
   const errorEl = document.getElementById("error");
   const summaryEl = document.getElementById("summary");
+  const catsEl = document.getElementById("cats");
   const flagsEl = document.getElementById("flags");
 
   const namesText = document.getElementById("namesText");
@@ -203,6 +204,7 @@
   function resetOutput() {
     summaryEl.classList.remove("show");
     downloadLink.style.display = "none";
+    catsEl.innerHTML = "";
     flagsEl.innerHTML = "";
     if (lastObjectUrl) {
       URL.revokeObjectURL(lastObjectUrl);
@@ -305,6 +307,8 @@
         minimumFractionDigits: 2, maximumFractionDigits: 2,
       });
 
+    renderCategories(s);
+
     const flagBlocks = [];
     if (nonEmpty(s.flag_unparseable_dates)) {
       flagBlocks.push(flagBlock(
@@ -324,6 +328,18 @@
         s.flag_nonadjacent_duplicate_quotes
       ));
     }
+    if (nonEmpty(s.flag_invoice_comments_without_date)) {
+      flagBlocks.push(flagBlock(
+        "Invoiced quotes whose comment does not carry an invoice date (Invoice Date left blank):",
+        s.flag_invoice_comments_without_date
+      ));
+    }
+    if (nonEmpty(s.flag_unrecognized_comments)) {
+      flagBlocks.push(flagBlock(
+        "Comments in a shape the cleaner does not recognize (categorized “Other” — please pass these on so they can be added):",
+        s.flag_unrecognized_comments
+      ));
+    }
 
     if (flagBlocks.length === 0) {
       flagsEl.innerHTML = '<div class="allclear">✓ No anomalies flagged. Dates, names, and quote numbers all checked out.</div>';
@@ -331,6 +347,36 @@
       flagsEl.innerHTML = flagBlocks.join("");
     }
     summaryEl.classList.add("show");
+  }
+
+  // Quote categories derived from the GTI Comments column, plus how many
+  // invoice dates were read out of those comments.
+  function renderCategories(s) {
+    const cats = s.comment_categories;
+    if (!cats) { catsEl.innerHTML = ""; return; }
+
+    const rows = Object.keys(cats).map((name) => {
+      const n = Number(cats[name]);
+      // "Other" means a comment shape nobody has seen before — call it out.
+      const alert = name === "Other" && n > 0;
+      return '<div class="catrow' + (alert ? " alert" : "") + '">' +
+        '<span class="k">' + escapeHtml(name) + "</span>" +
+        '<span class="v">' + fmt(n) + "</span></div>";
+    }).join("");
+
+    let note = "";
+    if (typeof s.invoice_dates_extracted === "number") {
+      note = "Invoice dates read from comments: " + fmt(s.invoice_dates_extracted) +
+        " of " + fmt(s.quotes_ordered || 0) + " invoiced quotes";
+      const recovered = Number(s.invoice_dates_recovered_from_page_break || 0);
+      if (recovered > 0) {
+        note += " (" + fmt(recovered) + " rebuilt from a comment split across a page break)";
+      }
+      note += ".";
+    }
+
+    catsEl.innerHTML = "<h3>Quote categories (how each quote was created)</h3>" + rows +
+      (note ? '<div class="catnote">' + escapeHtml(note) + "</div>" : "");
   }
 
   function flagBlock(title, items) {

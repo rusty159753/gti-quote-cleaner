@@ -99,6 +99,40 @@
   }
   .stat .n { font-size: 22px; font-weight: 700; }
   .stat .l { font-size: 13px; color: var(--muted); }
+  .cats {
+    margin-top: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .cats h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0;
+    padding: 9px 14px;
+    background: #eef2f5;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+  }
+  .catrow {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 14px;
+    font-size: 14px;
+    background: #f7f9fb;
+    border-top: 1px solid var(--line);
+  }
+  .catrow:first-of-type { border-top: 0; }
+  .catrow.alert { background: var(--warn-bg); color: var(--warn); }
+  .catrow .v { font-weight: 700; }
+  .catnote {
+    padding: 8px 14px;
+    font-size: 13px;
+    color: var(--muted);
+    background: #fff;
+    border-top: 1px solid var(--line);
+  }
   .flags { margin-top: 16px; }
   .flag {
     background: var(--warn-bg);
@@ -175,6 +209,7 @@
         <div class="stat"><div class="n" id="stOrdered">–</div><div class="l">Quotes ordered (has invoice)</div></div>
         <div class="stat"><div class="n" id="stAmount">–</div><div class="l">Total amount</div></div>
       </div>
+      <div class="cats" id="cats"></div>
       <div class="flags" id="flags"></div>
     </div>
   </div>
